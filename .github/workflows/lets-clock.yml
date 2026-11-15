@@ -1,0 +1,50 @@
+# Billing Day's MAIN clock, ready to copy into the PUBLIC repository
+# Local-Edge-Technology-Solutions/lets-clock as .github/workflows/lets-clock.yml (the repository is
+# created at rollout, on Ben's go). That repository holds only this file. Public runners are free,
+# so this clock never spends the private repository's Actions allowance.
+# - 12 knocks a day, 6:50 am to 5:50 pm Central; the timezone key handles daylight saving. Minute 50
+#   avoids the busy top of the hour and lands about 10 minutes before her hour.
+# - No checkout and no third-party action, so there is nothing to pin. permissions: {}.
+# - Its schedule and logs are public: the answer it prints carries counts only.
+# - Needs the repository variable BILLING_DAY_URL and the secret BILLING_DAY_CLOCK_TOKEN (Ben types it).
+# - GitHub turns a public repository's schedules off after 60 days without activity; the backup clock
+#   (.github/workflows/billing-day-clock.yml in Billing Day's repository) and the "no clock for
+#   2 hours" note to LETS cover that.
+# The knock loop is the same as the backup's (test/integration/knock.test.ts checks it).
+# Each try waits up to 60 seconds (curl --max-time 60); Billing Day stops starting sends 30 seconds into a
+# knock (RUN_BUDGET_MS in src/server/mail/send-outbox.ts), so it answers well inside that.
+name: Billing day clock
+on:
+  schedule:
+    - cron: "50 6-17 * * *"
+      timezone: "America/Chicago"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: billing-day-clock
+  cancel-in-progress: false
+jobs:
+  knock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Wake Billing Day and run what is due
+        env:
+          URL: ${{ vars.BILLING_DAY_URL }}
+          TOKEN: ${{ secrets.BILLING_DAY_CLOCK_TOKEN }}
+          CLOCK: public
+        run: |
+          set -u
+          for attempt in 1 2 3 4 5 6 7 8; do
+            code=$(curl -s -o answer.json -w '%{http_code}' --max-time 60 -X POST \
+              -H "Authorization: Bearer ${TOKEN}" -H 'Accept: application/json' \
+              "${URL}/api/jobs/tick?clock=${CLOCK}" 2>/dev/null) || code=000
+            if [ "$code" = 200 ] && jq -e '.app == "billing-day"' answer.json >/dev/null 2>&1; then
+              jq -c '{ok, run, planned, sent, late, failed, held}' answer.json
+              jq -e '.ok == true' answer.json >/dev/null && exit 0
+              echo "::error::Billing Day answered, but something needs a look"; exit 1
+            fi
+            echo "Attempt ${attempt}: not Billing Day's answer yet (HTTP ${code}); the site may be waking."
+            sleep 15
+          done
+          echo "::error::Billing Day did not answer"; exit 1
